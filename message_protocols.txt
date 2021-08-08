@@ -1,0 +1,18 @@
+{"type":"trade", "addr":"localhost", 'port':self.port, 'card': '''Card data type'''}
+{"type":"accept_trade", "addr":"localhost", 'port':self.port, 'card': '''Card data type'''}
+{"type":"decline_trade", "addr":"localhost", 'port':self.port}
+{"type":"transaction","public_key_sender": self.public_key, "public_key_receiver":  temp_public_key, "pokemon_card_id": trade_card.poke_id, "hash_pokemon_card_id": hash_object(trade_card.poke_id), "port": self.port, "trade_id": temp_trade_number, "transaction_id": uuid4(), "signature": self.sign(hash_object(trade_card.poke_id))}
+{"type": "verify_ownership", "owner_public_key": owner_public_key, "card_id": card_id, "transaction_id": transaction_id, "trade_id": trade_id}
+{"type": "ownership_verified", "transaction_id": content[3], "trade_id": content[4]}
+{"type": "ownership_not_verified", "transaction_id": content[3], "trade_id": content[4]}
+{"type": "ownership_not_verified", "transaction_id": content[3], "trade_id": content[4]}
+{"type": "add_block", "block": block}
+{"type": "add_member", "name": self.name, "host": self.host, "port": self.port, "public_key": self.public_key_to_str(self.public_key)}
+{"type": "send_blockchain", "host": self.host, "port": rand_port}
+{"type": "blockchain", "blockchain": self.blockchain}
+{"type": "first_ten_cards", "host": self.host, "port": self.port}
+{"type": "send_ten_cards", "ten_cards": ten_cards, "host": host, "port": port}
+{"type": "add_pending_transaction", "transaction_id": receiver_txn_id, "transaction_content": temp_dict}
+{"type": "transaction_approved", "transaction_id": key}
+{"type": "send_ten_cards", "card": card, "host": host, "port": port, "public_key_sender": self.public_key, "public_key_receiver":  public_key_receiver, "pokemon_card_id": card.poke_id, "hash_pokemon_card_id": hash_object(card.poke_id), "signature": self.sign(hash_object(card.poke_id))}
+{"type": "add_intitial_card", "card": card}
