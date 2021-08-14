@@ -10,16 +10,16 @@ import shutil
 from blockchain import Blockchain, Block
 from card import Card
 import uuid
-from json import dumps, loads
+from pickle import dumps, loads
 import pandas as pd
 import numpy as np
 import random
 from uuid import uuid4
 from ecdsa import SigningKey
 import getopt
+from pynput.keyboard import Key, Controller
 import sys
-import zlib
-from io import BytesIO
+from time import sleep
 
 
 class Trainer:
@@ -35,14 +35,17 @@ class Trainer:
         
         self.stop = False  # False: User is online
 
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.settimeout(None)
+        # self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # self.sock.settimeout(None)
         
-        self.port = port
-        self.sock.bind((host, port))
+        # self.port = port
+        # self.sock.bind((host, port))
 
-        self.initial_display()
-        self.auctioned_card = {}
+        self.initial_block_chains = []
+        self.initial_block_chains_sizes = []
+        # self.initial_display()
+        # self.join()
+        self.auctioned_cards = {}
 
         # only for genesis
         self.isGenesis = False
@@ -52,13 +55,15 @@ class Trainer:
 
         self.pending_transaction = {} # transaction id: {approved: false, card_add: card, card_remove: card}
         
+        T1 = threading.Thread(target = self.listener)
+        T1.start()
 
     
     # Blockchain methods
     #Sign the pokemon card that is up for trade
     def sign(self, hash_pokemon_card_id):
         """ Sign a hash_pokemon_card_id using the private key """
-        return self.private_key.sign(hash_pokemon_card_id)
+        return self.private_key.sign(hash_pokemon_card_id.encode('utf-8'))
 
     # Add received block from the miner to the blockchain
     def add_block(self, block):
@@ -69,13 +74,16 @@ class Trainer:
 
     def verify_ownership(self, owner_public_key, card_id):
 
-        for i in reversed(range(len(self.blockchain))):
-            contents = self.blockchain[i].contents
+        for i in reversed(range(len(self.blockchain.blocks))):
+            if i == 0:
+                break
+            contents = self.blockchain.blocks[i].content
             if contents['pokemon_card_id'] == card_id:
-                if contents['public_key_receiver'] == owner_public_key:
+                key1 = self.public_key_to_str(contents['public_key_receiver'])
+                key2 = self.public_key_to_str(owner_public_key)
+
+                if key1 == key2:
                     return True
-                elif contents['public_key_sender'] == owner_public_key:
-                    return False
         
         return False
 
@@ -98,17 +106,17 @@ class Trainer:
         block = Block(content, block_type='genesis')
         return block
 
+    
+
     # New member joins
     def join(self):
         
         lines = []
         with open('./members.txt', "r") as f:
             lines = f.readlines()
-        print("lines: ", lines)
         # genesis
         if lines == []:
 
-            print("here1")
             lines = []
             with open("./pokemons.csv", "r") as f:
                 lines = f.readlines()
@@ -124,16 +132,21 @@ class Trainer:
             self.cards = cards
 
             f = open("./members.txt", "a")
-            temp_string = self.name + "," + self.host + "," + str(self.port) + "," + self.public_key_to_str(self.public_key) + "\n"
+            temp_string = self.name + "," + self.host + "," + str(self.port) + "," + self.public_key_to_str(self.public_key)
             f.write(temp_string)
             f.close()
 
             genesis_block = self.create_genesis_block(self.public_key, self.cards)
             self.blockchain = Blockchain()
             self.add_block(genesis_block)
+
+            public_key_str = self.public_key_to_str(self.public_key)
+            message = {"type": "add_member", "name": self.name, "host": self.host, "port": self.port, "public_key": public_key_str}
+            new_sock = socket.socket()
+            new_sock.connect(("localhost", 10000))
+            self.send_message(message, new_sock)
             
         else:
-            print("here2")
             
             lines = []
             with open("./members.txt", "r") as f:
@@ -144,91 +157,81 @@ class Trainer:
             lines = list(map(lambda x: x.split(","), lines))
             
             for i in range(len(lines)):
-                self.members[lines[i][0]] = (lines[i][1], int(lines[i][2]), self.public_key_to_obj(lines[i][3]))
+                public_key_obj = self.public_key_to_obj(lines[i][3])
+                self.members[lines[i][0]] = (lines[i][1], int(lines[i][2]), public_key_obj)
             
-            message = {"type": "add_member", "name": self.name, "host": self.host, "port": self.port, "public_key": self.public_key_to_str(self.public_key)}
+            public_key_str = self.public_key_to_str(self.public_key)
+            message = {"type": "add_member", "name": self.name, "host": self.host, "port": self.port, "public_key": public_key_str}
             self.flood(message)
 
+            new_sock = socket.socket()
+            new_sock.connect(("localhost", 10000))
+            self.send_message(message, new_sock)
+
             f = open("./members.txt", "a")
-            temp_string = self.name + "," + self.host + "," + str(self.port) + "," + self.public_key_to_str(self.public_key)
+            temp_string = "\n" + self.name + "," + self.host + "," + str(self.port) + "," + self.public_key_to_str(self.public_key)
             f.write(temp_string)
             f.close()
 
-            rand_port = random.randint(40000, 50000)       
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(None)    
-            sock.bind(('localhost', rand_port))
             
             block_chains = []
             block_chains_sizes = []     
             for key, val in self.members.items():
                 
                 
-                message = {"type": "send_blockchain", "host": self.host, "port": rand_port}
+                message = {"type": "send_blockchain", "host": self.host, "port": self.port}
 
-                packet = dumps(message).encode("utf-16")
+                new_sock = socket.socket()
+                new_sock.connect(('localhost', val[1]))
+                self.send_message(message, new_sock)
 
-                filename = str(uuid4())
-                complete_path = "./temp_files/" + filename + ".bin"
-
-                with open(complete_path, "wb") as f:
-                    f.write(packet)
-
-                sock.sendto(filename.encode("utf-8"), ('localhost', val[1]))
-
-                message_byte, _ = sock.recvfrom(4096)
-                message = message_byte
-                content = loads(message)
-                block_chains.append(content["blockchain"])
-                block_chains_sizes.append(len(content["blockchain"].blocks))
-            
-            sock.close()
-            index = block_chains.index(max(block_chains_sizes))
-            self.blockchain = block_chains[index]
-
-            self.first_ten_cards()
-
-        print("starting action thread")
-        # T2 = threading.Thread(target = self.action)
-        # T2.daemon = True
-        # T2.start()
         self.action()
 
     def first_ten_cards(self):
-        message = {"type": "first_ten_cards", "host": self.host, "port": self.port, "public_key": self.public_key_to_str(self.public_key)}
+        message = {"type": "first_ten_cards", "host": self.host, "port": self.port, "public_key": self.public_key}
         genesis = list(self.members.keys())[0]
-        self.send_message(message, self.members[genesis][0], self.members[genesis][1])
+        new_sock = socket.socket()
+        new_sock.connect((self.members[genesis][0], self.members[genesis][1]))
+        self.send_message(message, new_sock)
 
     # Always listening port
     def listener(self):
+        listener = socket.socket()
+        listener.bind((self.host, self.port))
+        listener.listen(100)
         while not self.stop:
-            message_byte, _ = self.sock.recvfrom(4096)
-            message = message_byte.decode("utf-8")
-            self.handleMessage(message)
-            # threading.Thread(target = self.handleConnection, args = (client, addr)).start()
-        print("Shutting down player: ", self.name , '_', self.host,'_' , self.port)
+            client, addr = listener.accept()
+            threading.Thread(target = self.handleMessage, args = (client, addr)).start()
+        print("Shutting down node:", self.host, self.port)
         try:
-            self.sock.shutdown(2)
-            self.sock.close()
+            listener.shutdown(2)
+            listener.close()
         except:
-            self.sock.close()
+            listener.close()
+        
 
     # General function to initiate an action (trade, gift, etc)
     def action(self):
-        print("in action1")
         while not self.stop:
-            print("in action2")
 
-            user_input = input("input: ")
+            user_input = input()
+            
 
             input_split = user_input.split(" ")
 
-            if input_split[0] == 'trade': 
+
+            if input_split[0] == '':
+                continue
+            elif input_split[0] == 'trade': 
                 self.trade()
             elif input_split[0] == 'gift':
                 self.gift_card()
             elif input_split[0] == 'my_cards':
                 self.view_my_cards()
+            elif input_split[0] == 'blockchain':
+                print(self.blockchain)
+            elif input_split[0] == 'members':
+                self.view_members()
             elif input_split[0] == 'help':
                 self.display_help()
             elif input_split[0] == 'view_trade':
@@ -239,50 +242,60 @@ class Trainer:
                 print("\nThe input keyword is not correct, please type again\n")
                 print("\nType 'help' for keyword information...")
 
-    
+    def view_members(self):
+        print("\n**********MEMBERS**********\n\n")
+        for key, val in self.members.items():
+            print_str =  key + " at address \"" + val[0] + "\" and port \"" + str(val[1]) + "\"" 
+            print(print_str)
+        print("\n**********MEMBERS**********\n\n")
     # Deals with incoming messages        
-    def handleMessage(self, message):
-        complete_path = "./temp_files/" + message + ".bin"
+    def handleMessage(self, client, addr):
 
-        content = None
+        message_arr = []
+        count = 0
+        while True:
+            packet = client.recv(4096)
+            if not packet: break
+            message_arr.append(packet)
+            count = count + 1
+        content = loads(b"".join(message_arr))
 
-        with open(complete_path, "rb") as f:
-            content = f.read().decode("utf-16")
 
-        content = loads(content)
         
         if content['type'] == "trade":
+            new_sock = socket.socket()
+            new_sock.connect(('localhost', content['port']))
             print("\nTRADE OFFER!\nHere is the card up for trade\n")
             content['card'].view_card()
             print("\n   'accept'/'reject':  ")
             decision = input()
+
             if decision == 'accept':
-                self.accept_trade(content['addr'], content['port'])
+                self.accept_trade(new_sock, content['card'])
             else:
-                self.decline_trade(content['addr'], content['port'])
+                self.decline_trade(new_sock, content['card'])
                 
 
         elif content['type'] == "accept_trade":
-            trade_card = list(self.auctioned_card.keys())[0]
-            self.auctioned_card[trade_card][(content['name'], content['port'])] = content['card']
-            self.check_response_count()
+            self.auctioned_cards[content['key_card'].poke_id][(content['name'], content['port'])] = content['card']
+            self.check_response_count(content['key_card'].poke_id)
 
             
         
         elif content['type'] == "decline_trade":
-            trade_card = list(self.auctioned_card.keys())[0]
-            self.auctioned_card[trade_card][(content['name'], content['port'])] = None
-            self.check_response_count()
+            self.auctioned_cards[content['key_card'].poke_id][(content['name'], content['port'])] = None
+            self.check_response_count(content['key_card'].poke_id)
 
         elif content['type'] == "verify_ownership":
             check = self.verify_ownership(content["owner_public_key"], content["card_id"])
-            
+            new_sock = socket.socket()
+            new_sock.connect(('localhost', 10000))
             if check:
                 message = {"type": "ownership_verified", "transaction_id": content["transaction_id"], "trade_id": content["trade_id"]}
-                self.send_message(message, 'localhost', 10000)
+                self.send_message(message, new_sock)
             else:
                 message = {"type": "ownership_not_verified", "transaction_id": content["transaction_id"], "trade_id": content["trade_id"]}
-                self.send_message(message, 'localhost', 10000)
+                self.send_message(message, new_sock)
 
         elif content['type'] == "add_block":
             self.add_block(content['block'])
@@ -292,10 +305,17 @@ class Trainer:
             
 
         elif content['type'] == "send_blockchain":
-            print("my bchain:", self.blockchain)
             
             message = {"type": "blockchain", "blockchain": self.blockchain}
-            self.send_message(message, content["host"], content["port"])
+            new_sock = socket.socket()
+            new_sock.connect((content['host'], content['port']))
+            self.send_message(message, new_sock)
+
+        elif content['type'] == "blockchain":
+            self.initial_block_chains.append(content["blockchain"])
+            self.initial_block_chains_sizes.append(len(content["blockchain"].blocks))
+            if len(self.initial_block_chains_sizes) == len(list(self.members.keys())):
+                self.accept_longest_blockchain()
 
         elif content['type'] == "first_ten_cards":
             self.initialize_cards(content["host"], content["port"], content["public_key"])
@@ -305,11 +325,31 @@ class Trainer:
 
         elif content['type'] == "add_initial_card":
             self.my_cards.append(content["card"])
+        
+        elif content['type'] == "twin_transaction":
+            message = content['dict']
+            message["signature"] = self.sign(message["hash_pokemon_card_id"])
+            message["type"] = "transaction"
+            new_sock = socket.socket()
+            new_sock.connect(('localhost', 10000))
+            self.send_message(message, new_sock)
 
+        elif content['type'] == "add_pending_transaction":
+            self.pending_transaction[content["transaction_id"]] = content["transaction_content"]
+
+    def accept_longest_blockchain(self):
+        index = self.initial_block_chains_sizes.index(max(self.initial_block_chains_sizes))
+        self.blockchain = self.initial_block_chains[index]
+        self.first_ten_cards()
+    
     def approve_transaction(self, transaction_id):
         self.pending_transaction[transaction_id]["approve"] = True
-        self.my_cards.remove(self.pending_transaction[transaction_id]["card_add"])
-        self.my_cards.remove(self.pending_transaction[transaction_id]["card_remove"])
+        self.my_cards.append(self.pending_transaction[transaction_id]["card_add"])
+        new_cards = []
+        for card in self.my_cards:
+            if card.poke_id != self.pending_transaction[transaction_id]["card_remove"].poke_id:
+                new_cards.append(card)
+        self.my_cards = new_cards
 
 
     def initialize_cards(self, host, port, public_key_receiver):
@@ -318,25 +358,31 @@ class Trainer:
 
         for card in ten_cards:
             message = {"type": "send_ten_cards", "card": card, "host": host, "port": port, "public_key_sender": self.public_key, "public_key_receiver":  public_key_receiver, "pokemon_card_id": card.poke_id, "hash_pokemon_card_id": hash_object(card.poke_id), "signature": self.sign(hash_object(card.poke_id))}
-
-            self.send_message(message, 'localhost', 10000)
+            new_sock = socket.socket()
+            new_sock.connect(('localhost', 10000))
+            self.send_message(message, new_sock)
+            sleep(0.2)
 
     # Checks whether each member has responded to the auctioned card
-    def check_response_count(self):
-        if len(list(self.members.keys())) == len(list(self.auction_card[list(self.auctioned_card.keys())[0]].keys())):
-            self.evaluate_auction()
+    def check_response_count(self, key):
+        if (len(list(self.members.keys()))-1)  ==  len(list(self.auctioned_cards[key].keys())):
+            self.evaluate_auction(key)
 
-    def evaluate_auction(self):
-        trade_card = list(self.auctioned_card.keys())[0]
+    def evaluate_auction(self, key):
         
         print("\n!___WOOHOO! All members have responded to trade offer__!\n")
         print("\nYour card:\n")
-        trade_card.view_card()
-        print("\nCards offered for trade against your card:\n")
-        
-        for card in list(self.auctioned_card[trade_card].values()):
-            if card != None:
+        trade_card = None
+        for card in self.my_cards:
+            if card.poke_id == key:
                 card.view_card()
+                trade_card = card
+                break
+        print("\nCards offered for trade against your card:\n")
+        for offer in list(self.auctioned_cards[key].keys()):
+            if self.auctioned_cards[key][offer] != None:
+                print("Name: " + offer[0] + "\n")
+                self.auctioned_cards[key][offer].view_card()
                 print("\n")
             
         print("\nEnter the ID of card you want to accept trade of\n")
@@ -350,14 +396,14 @@ class Trainer:
             temp_public_key = None
             temp_trade_number = uuid4()
 
-            for key, val in self.auctioned_card[trade_card]:
+            for dict_key, val in self.auctioned_cards[key].items():
                 if val != None:
                     if val.poke_id == user_input:
                         temp_card = val
-                        temp_name_port = key
+                        temp_name_port = dict_key
 
-            for key, val in self.members:
-                if key == temp_name_port[0]:
+            for dict_key, val in self.members.items():
+                if dict_key == temp_name_port[0]:
                     temp_public_key = val[2]
 
             sender_txn_id = uuid4()
@@ -368,25 +414,26 @@ class Trainer:
 
             temp_dict = {"approve": False, "card_add": trade_card, "card_remove": temp_card}
             message = {"type": "add_pending_transaction", "transaction_id": receiver_txn_id, "transaction_content": temp_dict}
-            self.send_message(message, 'localhost', temp_name_port[1])
+            new_sock = socket.socket()
+            new_sock.connect(('localhost', temp_name_port[1]))
+            self.send_message(message, new_sock)
 
             message_1 = {"type":"transaction","public_key_sender": self.public_key, "public_key_receiver":  temp_public_key, "pokemon_card_id": trade_card.poke_id, "hash_pokemon_card_id": hash_object(trade_card.poke_id), "port": self.port, "trade_id": temp_trade_number, "transaction_id": sender_txn_id, "signature": self.sign(hash_object(trade_card.poke_id))}
-            message_2 = {"type":"transaction", "public_key_sender": temp_public_key, "public_key_receiver":  self.public_key, "pokemon_card_id": temp_card.poke_id, "hash_pokemon_card_id": hash_object(temp_card.poke_id), "port": temp_name_port[1], "trade_id": temp_trade_number, "transaction_id": receiver_txn_id, "signature": self.sign(hash_object(temp_card.poke_id))}
+            message_2 = {"type":"twin_transaction", "dict": {"public_key_sender": temp_public_key, "public_key_receiver":  self.public_key, "pokemon_card_id": temp_card.poke_id, "hash_pokemon_card_id": hash_object(temp_card.poke_id), "port": temp_name_port[1], "trade_id": temp_trade_number, "transaction_id": receiver_txn_id}}
             
-            self.send_message(message_1, 'localhost', 10000)
-            self.send_message(message_2, 'localhost', 10000)
+            new_sock1 = socket.socket()
+            new_sock1.connect(('localhost', 10000))
+            new_sock2 = socket.socket()
+            new_sock2.connect(('localhost', temp_name_port[1]))
+
+            self.send_message(message_1, new_sock1)
+            self.send_message(message_2, new_sock2)
 
     # Adds selfs credentials to text file upon join
     def add_to_txt(self, name, host, port):
         with open("./members.txt", 'a') as my_file:
             to_write = name + ',' + 'localhost' + ',' + str(port) + ',' + str(self.public_key) 
             my_file.write(to_write)
-            # lines = my_file.readlines()
-            # for line in lines:
-            #     temp = line.split(",")
-            #     # check is self.name already exists in memebrs.txt
-            #     if temp[0] == name:
-            #         print("\nName already taken, type new name")
                     
                 
                 
@@ -404,24 +451,36 @@ class Trainer:
         return members_info
     
     # Sends message to all members
-    def flood(self, message):
-        print(self.members)
-        for key, val in self.members.items():
-            self.send_message(message, val[0], val[1])
+    def flood(self, message, include_genesis=True):
+        if include_genesis:
+            for key, val in self.members.items():
+                new_sock = socket.socket()
+                new_sock.connect((val[0], val[1]))
+                self.send_message(message, new_sock)
+        else:
+            key_list = list(self.members.keys())
+            key_list = key_list[1:]
+            for key in key_list:
+                new_sock = socket.socket()
+                new_sock.connect((self.members[key][0], self.members[key][1]))
+                self.send_message(message, new_sock)
 
     # Put for trade
-    def trade(self, card):
+    def trade(self):
         print("\nCards list:\n")
         self.view_my_cards()
         print("\nEnter Card Pokemon ID: ")
-        poke_ID = int(input())
+        poke_ID = input()
+        card_found = False
         for card in self.my_cards:
             if card.poke_id == poke_ID:
+                card_found = True
                 message = {"type":"trade", "addr":"localhost", 'port':self.port, 'card': card}
-                self.auctioned_cards[card] = {}
-                self.flood(message)
-            else:
-                print("!__Invalid Pokemon ID entered__!")
+                self.auctioned_cards[card.poke_id] = {}
+                self.flood(message, False)
+                break
+        if not card_found:
+            print("!__Invalid Pokemon ID entered__!")
 
          
     # Bid card against a card on auction
@@ -438,7 +497,7 @@ class Trainer:
                 print("!__Invalid Pokemon ID entered__!")
     
     # Accept a card trade. Generate a block
-    def accept_trade(self, addr, port):
+    def accept_trade(self, client, key_card):
         print("\nCards list:\n")
         
         self.view_my_cards()
@@ -446,19 +505,22 @@ class Trainer:
         print("\nEnter Card Pokemon ID you want to give for trade: \n")
         
         poke_ID = input()
-        
+        card_found = False
         for card in self.my_cards:
             if card.poke_id == poke_ID:
-                message = {"type":"accept_trade", "name": self.name, "addr":"localhost", 'port':self.port, 'card': card}
-                self.send_message(message, addr, port)
-        else:
+                message = {"type":"accept_trade", "name": self.name, "addr":"localhost", 'port':self.port, 'card': card, 'key_card': key_card}
+                self.send_message(message, client)
+                card_found = True
+                break
+        if not card_found:
             print("!__Invalid Pokemon ID entered__!")
-            self.decline_trade(addr, port)
+            self.decline_trade(client, key_card)
 
     # Decline a card trade
-    def decline_trade(self, addr, port):
-        message = {"type":"decline_trade", "name": self.name, "addr":"localhost", 'port':self.port}
-        self.send_message(message, addr, port)
+    def decline_trade(self, client, card):
+        card.view_card()
+        message = {"type":"decline_trade", "name": self.name, "addr":"localhost", 'port':self.port, 'key_card': card}
+        self.send_message(message, client)
     
     # View my cards
     def view_my_cards(self):
@@ -468,7 +530,7 @@ class Trainer:
     
     # View all trade offers
     def view_trade_offers(self):
-        print()
+        pass
     
     # Gift a card
     def gift_card(self):
@@ -482,18 +544,22 @@ class Trainer:
         self.view_my_cards()
         card_name = input()
         
-    def send_message(self, content, addr, port):
-        packet = dumps(content).encode("utf-16")
+    def send_message(self, content, client):
+        # packet = dumps(content).encode("utf-16")
 
-        filename = str(uuid4())
-        complete_path = "./temp_files/" + filename + ".bin"
+        # filename = str(uuid4())
+        # complete_path = "./temp_files/" + filename + ".bin"
 
-        with open(complete_path, "wb") as f:
-            f.write(packet)
+        # with open(complete_path, "wb") as f:
+        #     f.write(packet)
 
-        # self.sock.connect((addr, port))
-        self.sock.sendto(filename.encode("utf-8"), (addr, port))
-
+        # # self.sock.connect((addr, port))
+        # self.sock.sendto(filename.encode("utf-8"), (addr, port))
+        
+        packet = dumps(content)
+        # print("packet in send_message:", packet)
+        client.send(packet)
+        client.close()
     
     
     # Display the possible actions and format for the user's reference
@@ -553,14 +619,13 @@ if __name__ == "__main__":
         exit(1)
 
     # create trainer class instance
+    print("Starting...\nName: " + str(USER_NAME) + "\nHost: " + str(DEST) + "\nPort: " + str(PORT) + "\n")
     S = Trainer(USER_NAME, DEST, PORT)
     
     try:
 
         # Start receiving Messages
-        T1 = threading.Thread(target = S.listener)
-        T1.daemon = True
-        T1.start()
+        
         
         # initializations
         # S.add_to_txt(USER_NAME, DEST, PORT)
@@ -575,4 +640,5 @@ if __name__ == "__main__":
         # T2.start()
 
     except (KeyboardInterrupt, SystemExit):
+
         sys.exit()

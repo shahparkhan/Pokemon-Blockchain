@@ -31,4 +31,3 @@ class Card:
         print(self.give_print_str("TOTAL:", self.total))
         print(self.give_print_str("LEGENDARY:", self.legendary))
         print("*******************POKEMON CARD*******************")
-
